@@ -1,170 +1,54 @@
-
-const STORE_KEY = "musicThing.projects.v1";
-const state = { projects: loadProjects(), currentId: null, history: [], future: [], timer: null, step: 0, audio: null };
-
-function loadProjects(){
-  try { return JSON.parse(localStorage.getItem(STORE_KEY)) || []; } catch { return []; }
-}
-function persist(){ localStorage.setItem(STORE_KEY, JSON.stringify(state.projects)); }
-function uid(){ return crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random(); }
-function newProject(name){
-  const now = Date.now();
-  return {
-    id: uid(), name: name || "Untitled Song", bpm: 120, createdAt: now, updatedAt: now,
-    piano: {}, drums: { Kick:[], Snare:[], "Closed Hat":[], "Open Hat":[] }
-  };
-}
-function getProject(){ return state.projects.find(p=>p.id===state.currentId); }
-function clone(v){ return JSON.parse(JSON.stringify(v)); }
-function saveProject(p){ p.updatedAt = Date.now(); persist(); }
-function snapshot(){
-  const p=getProject(); if(!p)return;
-  state.history.push(clone(p)); if(state.history.length>60) state.history.shift();
-  state.future.length=0;
-}
-function undo(){
-  const p=getProject(); if(!p||!state.history.length)return;
-  state.future.push(clone(p));
-  const old=state.history.pop();
-  const i=state.projects.findIndex(x=>x.id===p.id); state.projects[i]=old; persist(); renderEditor();
-}
-function redo(){
-  const p=getProject(); if(!p||!state.future.length)return;
-  state.history.push(clone(p));
-  const next=state.future.pop();
-  const i=state.projects.findIndex(x=>x.id===p.id); state.projects[i]=next; persist(); renderEditor();
-}
-
-function esc(s){ return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
-function fmt(ts){ return new Date(ts).toLocaleString([], {month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}); }
-
-function renderHome(){
-  stopPlayback();
-  state.currentId=null; state.history=[]; state.future=[];
-  const cards = state.projects.length ? state.projects
-    .slice().sort((a,b)=>b.updatedAt-a.updatedAt)
-    .map(p=>`
-      <article class="project-card">
-        <h3>${esc(p.name)}</h3>
-        <div class="project-meta">${p.bpm} BPM · edited ${fmt(p.updatedAt)}</div>
-        <div class="project-actions">
-          <button class="btn" data-open="${p.id}">Open</button>
-          <button class="btn" data-rename="${p.id}">Rename</button>
-          <button class="btn danger" data-delete="${p.id}">Delete</button>
-        </div>
-      </article>`).join("")
-    : '<div class="empty">No projects yet. Make some noise.</div>';
-
-  app.innerHTML=`
-    <div class="app-shell">
-      <header class="topbar"><div class="brand">Music Thing</div><div class="spacer"></div><button id="newBtn" class="btn primary">+ New Project</button></header>
-      <main class="home"><h1>Your projects</h1><div class="sub">Everything saves locally in this browser.</div><div class="project-grid">${cards}</div></main>
-    </div>`;
-  document.querySelector("#newBtn").onclick=()=>nameDialog("New project","Untitled Song", name=>{
-    const p=newProject(name); state.projects.push(p); persist(); openProject(p.id);
-  });
-  document.querySelectorAll("[data-open]").forEach(b=>b.onclick=()=>openProject(b.dataset.open));
-  document.querySelectorAll("[data-rename]").forEach(b=>b.onclick=()=>{
-    const p=state.projects.find(x=>x.id===b.dataset.rename);
-    nameDialog("Rename project",p.name,name=>{p.name=name||p.name;p.updatedAt=Date.now();persist();renderHome();});
-  });
-  document.querySelectorAll("[data-delete]").forEach(b=>b.onclick=()=>{
-    const p=state.projects.find(x=>x.id===b.dataset.delete);
-    confirmDialog("Delete “"+p.name+"”?", "This removes the local project.", ()=>{
-      state.projects=state.projects.filter(x=>x.id!==p.id);persist();renderHome();
-    });
-  });
-}
-
-function nameDialog(title,value,onDone){
-  const wrap=document.createElement("div"); wrap.className="modal-backdrop";
-  wrap.innerHTML=`<div class="modal"><h2>${esc(title)}</h2><input maxlength="60" value="${esc(value)}"><div class="modal-actions"><button class="btn cancel">Cancel</button><button class="btn primary ok">Save</button></div></div>`;
-  document.body.append(wrap); const input=wrap.querySelector("input"); input.focus(); input.select();
-  const close=()=>wrap.remove(); wrap.querySelector(".cancel").onclick=close;
-  const done=()=>{const v=input.value.trim(); if(v){close();onDone(v);}}; wrap.querySelector(".ok").onclick=done; input.onkeydown=e=>{if(e.key==="Enter")done();if(e.key==="Escape")close();};
-}
-function confirmDialog(title,text,onDone){
-  const wrap=document.createElement("div"); wrap.className="modal-backdrop";
-  wrap.innerHTML=`<div class="modal"><h2>${esc(title)}</h2><p class="sub">${esc(text)}</p><div class="modal-actions"><button class="btn cancel">Cancel</button><button class="btn danger ok">Delete</button></div></div>`;
-  document.body.append(wrap); wrap.querySelector(".cancel").onclick=()=>wrap.remove(); wrap.querySelector(".ok").onclick=()=>{wrap.remove();onDone();};
-}
-
-function openProject(id){ state.currentId=id; state.history=[]; state.future=[]; renderEditor(); }
-
-const notes=["C5","B4","A#4","A4","G#4","G4","F#4","F4","E4","D#4","D4","C#4","C4"];
-function renderEditor(){
-  const p=getProject(); if(!p)return renderHome();
-  const pianoRows=notes.map(note=>`<div class="piano-row"><div class="key">${note}</div>${Array.from({length:16},(_,i)=>`<button class="cell ${i%4===0?"beat":""} ${p.piano[note]?.includes(i)?"active":""}" data-note="${note}" data-step="${i}" aria-label="${note} step ${i+1}"></button>`).join("")}</div>`).join("");
-  const drumRows=Object.keys(p.drums).map(name=>`<div class="drum-row"><div class="drum-name">${name}</div>${Array.from({length:16},(_,i)=>`<button class="step ${i%4===0?"beat":""} ${p.drums[name].includes(i)?"active":""}" data-drum="${name}" data-step="${i}"></button>`).join("")}</div>`).join("");
-  app.innerHTML=`
-    <div class="editor">
-      <header class="topbar"><button id="homeBtn" class="btn">← Projects</button><div class="project-title">${esc(p.name)}</div><button id="renameBtn" class="btn">Rename</button><div class="spacer"></div><span class="status">Autosaved</span></header>
-      <main class="editor-main">
-        <section class="transport">
-          <button id="playBtn" class="btn primary">▶ Play</button><button id="stopBtn" class="btn">■ Stop</button>
-          <label>BPM <input id="bpm" type="number" min="30" max="300" value="${p.bpm}"></label>
-          <button id="undoBtn" class="btn">↶ Undo</button><button id="redoBtn" class="btn">↷ Redo</button>
-          <div class="spacer"></div><button id="exportBtn" class="btn">Export WAV</button>
-        </section>
-        <section class="panel"><div class="panel-head"><span>Piano Roll</span><span class="status">16 steps · click notes</span></div><div class="scroll piano-wrap">${pianoRows}</div></section>
-        <section class="panel"><div class="panel-head"><span>Drums</span><span class="status">Kick · Snare · Hats</span></div><div class="scroll drum-wrap">${drumRows}</div></section>
-      </main>
-    </div>`;
-  document.querySelector("#homeBtn").onclick=renderHome;
-  document.querySelector("#renameBtn").onclick=()=>nameDialog("Rename project",p.name,name=>{snapshot();p.name=name;saveProject(p);renderEditor();});
-  document.querySelector("#undoBtn").onclick=undo; document.querySelector("#redoBtn").onclick=redo;
-  document.querySelector("#playBtn").onclick=startPlayback; document.querySelector("#stopBtn").onclick=stopPlayback;
-  document.querySelector("#bpm").onchange=e=>{snapshot();p.bpm=Math.max(30,Math.min(300,+e.target.value||120));saveProject(p);renderEditor();};
-  document.querySelector("#exportBtn").onclick=exportWav;
-
-  document.querySelectorAll("[data-note]").forEach(b=>b.onclick=()=>{
-    snapshot(); const a=p.piano[b.dataset.note] ||= []; const s=+b.dataset.step; const i=a.indexOf(s); i>=0?a.splice(i,1):a.push(s); saveProject(p); b.classList.toggle("active");
-  });
-  document.querySelectorAll("[data-drum]").forEach(b=>b.onclick=()=>{
-    snapshot(); const a=p.drums[b.dataset.drum]; const s=+b.dataset.step; const i=a.indexOf(s); i>=0?a.splice(i,1):a.push(s); saveProject(p); b.classList.toggle("active");
-  });
-}
-
-function ensureAudio(){ if(!state.audio) state.audio=new (window.AudioContext||window.webkitAudioContext)(); if(state.audio.state==="suspended") state.audio.resume(); return state.audio; }
-function noteFreq(note){
-  const m=note.match(/^([A-G])(#?)(\d)$/); const base={C:0,D:2,E:4,F:5,G:7,A:9,B:11}; const midi=(+m[3]+1)*12+base[m[1]]+(m[2]?1:0); return 440*Math.pow(2,(midi-69)/12);
-}
-function tone(ctx,freq,when,dur=.12,vol=.12){
-  const o=ctx.createOscillator(),g=ctx.createGain(); o.type="triangle";o.frequency.value=freq;g.gain.setValueAtTime(vol,when);g.gain.exponentialRampToValueAtTime(.0001,when+dur);o.connect(g).connect(ctx.destination);o.start(when);o.stop(when+dur);
-}
-function noise(ctx,when,dur=.08,vol=.18){
-  const len=Math.max(1,Math.floor(ctx.sampleRate*dur)), buf=ctx.createBuffer(1,len,ctx.sampleRate),d=buf.getChannelData(0); for(let i=0;i<len;i++)d[i]=Math.random()*2-1;
-  const s=ctx.createBufferSource(),g=ctx.createGain();s.buffer=buf;g.gain.setValueAtTime(vol,when);g.gain.exponentialRampToValueAtTime(.0001,when+dur);s.connect(g).connect(ctx.destination);s.start(when);
-}
-function drum(ctx,name,when){
-  if(name==="Kick"){ const o=ctx.createOscillator(),g=ctx.createGain();o.frequency.setValueAtTime(130,when);o.frequency.exponentialRampToValueAtTime(45,when+.14);g.gain.setValueAtTime(.5,when);g.gain.exponentialRampToValueAtTime(.0001,when+.16);o.connect(g).connect(ctx.destination);o.start(when);o.stop(when+.17); }
-  else noise(ctx,when,name==="Open Hat"?.18:.07,name==="Snare"?.28:.12);
-}
-function playStep(step){
-  const p=getProject(); if(!p)return; const ctx=ensureAudio(),t=ctx.currentTime+.01;
-  for(const n of notes) if(p.piano[n]?.includes(step)) tone(ctx,noteFreq(n),t);
-  for(const [name,steps] of Object.entries(p.drums)) if(steps.includes(step)) drum(ctx,name,t);
-}
-function startPlayback(){
-  stopPlayback(); ensureAudio(); state.step=0; playStep(0);
-  const p=getProject(); state.timer=setInterval(()=>{state.step=(state.step+1)%16;playStep(state.step);},60000/p.bpm/4);
-}
-function stopPlayback(){ if(state.timer){clearInterval(state.timer);state.timer=null;} }
-
-async function exportWav(){
-  const p=getProject(); if(!p)return;
-  const secondsPerStep=60/p.bpm/4, duration=secondsPerStep*16+.5, rate=44100;
-  const ctx=new OfflineAudioContext(2,Math.ceil(duration*rate),rate);
-  function connectTone(freq,when,dur=.18,vol=.13){const o=ctx.createOscillator(),g=ctx.createGain();o.type="triangle";o.frequency.value=freq;g.gain.setValueAtTime(vol,when);g.gain.exponentialRampToValueAtTime(.0001,when+dur);o.connect(g).connect(ctx.destination);o.start(when);o.stop(when+dur);}
-  function connectNoise(when,dur=.08,vol=.15){const len=Math.floor(rate*dur),buf=ctx.createBuffer(1,len,rate),d=buf.getChannelData(0);for(let i=0;i<len;i++)d[i]=Math.random()*2-1;const s=ctx.createBufferSource(),g=ctx.createGain();s.buffer=buf;g.gain.setValueAtTime(vol,when);g.gain.exponentialRampToValueAtTime(.0001,when+dur);s.connect(g).connect(ctx.destination);s.start(when);}
-  for(let step=0;step<16;step++){const when=step*secondsPerStep;for(const n of notes)if(p.piano[n]?.includes(step))connectTone(noteFreq(n),when);for(const [name,steps] of Object.entries(p.drums))if(steps.includes(step)){if(name==="Kick"){const o=ctx.createOscillator(),g=ctx.createGain();o.frequency.setValueAtTime(130,when);o.frequency.exponentialRampToValueAtTime(45,when+.14);g.gain.setValueAtTime(.5,when);g.gain.exponentialRampToValueAtTime(.0001,when+.16);o.connect(g).connect(ctx.destination);o.start(when);o.stop(when+.17);}else connectNoise(when,name==="Open Hat"?.18:.07,name==="Snare"?.25:.12);}}
-  const rendered=await ctx.startRendering(),wav=audioBufferToWav(rendered),blob=new Blob([wav],{type:"audio/wav"}),url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download=(p.name||"music-thing")+".wav";a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
-}
-function audioBufferToWav(buffer){
-  const channels=buffer.numberOfChannels, length=buffer.length*channels*2+44, out=new ArrayBuffer(length),v=new DataView(out);let pos=0;
-  const str=s=>{for(let i=0;i<s.length;i++)v.setUint8(pos++,s.charCodeAt(i));}; const u16=n=>{v.setUint16(pos,n,true);pos+=2;};const u32=n=>{v.setUint32(pos,n,true);pos+=4;};
-  str("RIFF");u32(length-8);str("WAVE");str("fmt ");u32(16);u16(1);u16(channels);u32(buffer.sampleRate);u32(buffer.sampleRate*channels*2);u16(channels*2);u16(16);str("data");u32(length-44);
-  for(let i=0;i<buffer.length;i++)for(let c=0;c<channels;c++){let s=Math.max(-1,Math.min(1,buffer.getChannelData(c)[i]));v.setInt16(pos,s<0?s*32768:s*32767,true);pos+=2;}
-  return out;
-}
+const STORE_KEY="musicThing.projects.v2",OLD_KEY="musicThing.projects.v1";
+const S={projects:load(),currentId:null,history:[],future:[],audio:null,playing:false,timer:null,step:0,startTime:0,z:30};
+const channels=["Kick","Snare","Closed Hat","Open Hat","Bass","Synth"];
+const notes=["B5","A#5","A5","G#5","G5","F#5","F5","E5","D#5","D5","C#5","C5","B4","A#4","A4","G#4","G4","F#4","F4","E4","D#4","D4","C#4","C4"];
+function uid(){return crypto.randomUUID?crypto.randomUUID():Date.now()+"-"+Math.random()}
+function load(){try{let v=JSON.parse(localStorage.getItem(STORE_KEY));if(v)return v;let old=JSON.parse(localStorage.getItem(OLD_KEY)||"[]");return old.map(migrate)}catch{return[]}}
+function migrate(p){const steps={};channels.forEach(c=>steps[c]=p.drums?.[c]||[]);return{id:p.id||uid(),name:p.name||"Untitled Song",bpm:p.bpm||130,createdAt:p.createdAt||Date.now(),updatedAt:Date.now(),steps,piano:[],clips:[{id:uid(),track:0,start:0,length:16,type:"pattern",label:"Pattern 1"},{id:uid(),track:1,start:16,length:16,type:"pattern",label:"Pattern 1"}],volumes:{}}}
+function fresh(name){const p=migrate({id:uid(),name:name||"Untitled Song",bpm:130,createdAt:Date.now()});p.steps.Kick=[0,4,8,12];p.steps.Snare=[4,12];p.steps["Closed Hat"]=[2,6,10,14];p.piano=[{id:uid(),note:"C5",start:0,length:4},{id:uid(),note:"D#5",start:4,length:4},{id:uid(),note:"G5",start:8,length:4},{id:uid(),note:"F5",start:12,length:4}];return p}
+function persist(){localStorage.setItem(STORE_KEY,JSON.stringify(S.projects))}
+function P(){return S.projects.find(x=>x.id===S.currentId)}
+function clone(v){return JSON.parse(JSON.stringify(v))}
+function save(p){p.updatedAt=Date.now();persist()}
+function snap(){const p=P();if(!p)return;S.history.push(clone(p));if(S.history.length>80)S.history.shift();S.future=[]}
+function undo(){if(!S.history.length)return;let p=P();S.future.push(clone(p));S.projects[S.projects.findIndex(x=>x.id===p.id)]=S.history.pop();persist();renderEditor()}
+function redo(){if(!S.future.length)return;let p=P();S.history.push(clone(p));S.projects[S.projects.findIndex(x=>x.id===p.id)]=S.future.pop();persist();renderEditor()}
+function esc(s){return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
+function fmt(t){return new Date(t).toLocaleString([],{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"})}
+function renderHome(){stop();S.currentId=null;app.innerHTML=`<div class="home-shell"><div class="home-top"><div class="brand">Music Thing</div><div class="spacer"></div><button class="btn primary" id="new">+ New Project</button></div><main class="home"><h1>Your projects</h1><div class="sub">Local projects. No account. No cloud nonsense.</div><div class="project-grid">${S.projects.length?S.projects.slice().sort((a,b)=>b.updatedAt-a.updatedAt).map(p=>`<div class="project-card"><h3>${esc(p.name)}</h3><div class="meta">${p.bpm} BPM · ${fmt(p.updatedAt)}</div><div class="project-actions"><button class="btn open" data-id="${p.id}">Open</button><button class="btn rename" data-id="${p.id}">Rename</button><button class="btn danger del" data-id="${p.id}">Delete</button></div></div>`).join(""):'<div class="empty">No projects yet.</div>'}</div></main></div>`;
+document.querySelector("#new").onclick=()=>askName("New project","Untitled Song",n=>{let p=fresh(n);S.projects.push(p);persist();openProject(p.id)});document.querySelectorAll(".open").forEach(b=>b.onclick=()=>openProject(b.dataset.id));document.querySelectorAll(".rename").forEach(b=>b.onclick=()=>{let p=S.projects.find(x=>x.id===b.dataset.id);askName("Rename",p.name,n=>{p.name=n;save(p);renderHome()})});document.querySelectorAll(".del").forEach(b=>b.onclick=()=>{S.projects=S.projects.filter(x=>x.id!==b.dataset.id);persist();renderHome()})}
+function askName(title,val,done){let d=document.createElement("div");d.className="modal-bg";d.innerHTML=`<div class="modal"><h2>${title}</h2><input value="${esc(val)}"><div class="modal-actions"><button class="btn cancel">Cancel</button><button class="btn primary ok">Save</button></div></div>`;document.body.append(d);let i=d.querySelector("input");i.select();i.focus();d.querySelector(".cancel").onclick=()=>d.remove();let go=()=>{let v=i.value.trim();if(v){d.remove();done(v)}};d.querySelector(".ok").onclick=go;i.onkeydown=e=>{if(e.key==="Enter")go();if(e.key==="Escape")d.remove()}}
+function openProject(id){S.currentId=id;S.history=[];S.future=[];renderEditor()}
+function renderEditor(){let p=P();if(!p)return renderHome();channels.forEach(c=>p.steps[c]??=[]);p.piano??=[];p.clips??=[];p.volumes??={};
+app.innerHTML=`<div class="daw"><div class="menu-bar"><span class="menu-item" id="home">FILE</span><span class="menu-item">EDIT</span><span class="menu-item">ADD</span><span class="menu-item">PATTERNS</span><span class="menu-item">VIEW</span><span class="title-center">${esc(p.name)} — Music Thing</span></div>
+<div class="transport"><div class="group"><button class="btn icon" id="rew">⏮</button><button class="btn icon primary" id="play">▶</button><button class="btn icon" id="stop">■</button></div><div class="group"><span>BPM</span><input id="bpm" type="number" min="40" max="300" value="${p.bpm}"></div><div class="time-readout" id="time">1:01:00</div><div class="group"><button class="btn small" id="undo">↶</button><button class="btn small" id="redo">↷</button></div><div class="group"><button class="btn small toggle" data-win="rack">Channel Rack</button><button class="btn small toggle" data-win="piano">Piano Roll</button><button class="btn small toggle" data-win="mixer">Mixer</button></div><div class="spacer"></div><select id="genre"><option>Phonk</option><option>Country</option><option>EDM</option><option>Lo-fi</option><option>Trap</option></select><button class="btn" id="gen">Generate</button></div>
+<div class="workspace"><aside class="browser"><h3>Browser</h3><div class="browser-section"><b>Current project</b><div class="browser-item">Patterns</div><div class="browser-item">Automation</div><div class="browser-item">Audio clips</div></div><div class="browser-section"><b>Packs</b><div class="browser-item">Drums</div><div class="browser-item">Snares</div><div class="browser-item">Hats</div><div class="browser-item">Bass</div><div class="browser-item">FX</div></div><div class="browser-section"><b>Generators</b><div class="browser-item">3x Osc</div><div class="browser-item">MiniSynth</div><div class="browser-item">Sampler</div></div></aside>
+<section class="playlist-area" id="playlistScroll"><div class="timeline" id="timeline"><div class="ruler">${Array.from({length:16},(_,i)=>`<div class="bar-mark">${i+1}</div>`).join("")}</div><div class="tracks">${Array.from({length:10},(_,i)=>`<div class="track"><div class="track-name">Track ${i+1}</div><div class="track-lane" data-track="${i}"></div></div>`).join("")}</div><div class="playhead" id="playhead"></div></div></section>
+${windowHTML("rack","Channel Rack",250,105,760,420,channelRack(p))}${windowHTML("piano","Piano Roll",360,180,980,560,pianoRoll(p))}${windowHTML("mixer","Mixer",520,260,820,430,mixer(p))}</div></div>`;
+drawClips();wireBase();wireWindows();wireRack();wirePiano();wirePlaylist();wireMixer();updatePlayhead()}
+function windowHTML(id,title,x,y,w,h,body){return `<div class="window" id="win-${id}" style="left:${x}px;top:${y}px;width:${w}px;height:${h}px"><div class="win-head"><span>${title}</span><div class="spacer"></div><button class="close" data-win="${id}">×</button></div><div class="win-body">${body}</div></div>`}
+function channelRack(p){return `<div class="channel-rack">${channels.map(c=>`<div class="channel-row"><div class="channel-name">${c}</div>${Array.from({length:16},(_,i)=>`<button class="step ${p.steps[c].includes(i)?"on":""}" data-ch="${c}" data-step="${i}"></button>`).join("")}</div>`).join("")}</div>`}
+function pianoRoll(p){return `<div class="piano"><div class="piano-grid"><div class="keys">${notes.map(n=>`<div class="key ${n.includes("#")?"black":""}" data-key="${n}">${n}</div>`).join("")}</div><div class="note-grid" id="noteGrid">${p.piano.map(n=>noteHTML(n)).join("")}</div></div></div>`}
+function noteHTML(n){let row=notes.indexOf(n.note);return `<div class="note-block" data-id="${n.id}" style="left:${n.start/32*100}%;width:${n.length/32*100}%;top:${row*24+2}px"><span class="note-resize"></span></div>`}
+function mixer(p){return `<div class="mixer">${["Master",...channels].map((n,i)=>`<div class="strip"><h4>${n}</h4><div class="meter"><div class="meter-fill"></div></div><input class="fader" data-mix="${n}" type="range" orient="vertical" min="0" max="1" step=".01" value="${p.volumes[n]??.8}"></div>`).join("")}</div>`}
+function drawClips(){let p=P();document.querySelectorAll(".clip").forEach(x=>x.remove());p.clips.forEach(c=>{let lane=document.querySelector(`.track-lane[data-track="${c.track}"]`);if(!lane)return;let el=document.createElement("div");el.className="clip "+c.type;el.dataset.id=c.id;el.style.left=c.start/64*100+"%";el.style.width=c.length/64*100+"%";el.innerHTML=`<b>${esc(c.label)}</b><div class="mini">${c.type}</div><span class="clip-resize"></span>`;lane.append(el)})}
+function wireBase(){let p=P();document.querySelector("#home").onclick=renderHome;document.querySelector("#play").onclick=()=>S.playing?stop():play();document.querySelector("#stop").onclick=stop;document.querySelector("#rew").onclick=()=>{S.step=0;updatePlayhead()};document.querySelector("#undo").onclick=undo;document.querySelector("#redo").onclick=redo;document.querySelector("#bpm").onchange=e=>{snap();p.bpm=Math.max(40,Math.min(300,+e.target.value||130));save(p)};document.querySelector("#gen").onclick=()=>generate(document.querySelector("#genre").value);document.querySelectorAll(".toggle").forEach(b=>b.onclick=()=>document.querySelector("#win-"+b.dataset.win).classList.toggle("hidden"));document.querySelectorAll(".close").forEach(b=>b.onclick=()=>document.querySelector("#win-"+b.dataset.win).classList.add("hidden"))}
+function wireWindows(){document.querySelectorAll(".window").forEach(w=>{w.onpointerdown=()=>{w.style.zIndex=++S.z};let h=w.querySelector(".win-head"),ox,oy,startX,startY;h.onpointerdown=e=>{if(e.target.tagName==="BUTTON")return;w.setPointerCapture(e.pointerId);ox=e.clientX;oy=e.clientY;startX=w.offsetLeft;startY=w.offsetTop;h.onpointermove=ev=>{w.style.left=Math.max(0,startX+ev.clientX-ox)+"px";w.style.top=Math.max(0,startY+ev.clientY-oy)+"px"};h.onpointerup=()=>h.onpointermove=null}})}
+function wireRack(){document.querySelectorAll(".step").forEach(b=>b.onclick=()=>{let p=P(),a=p.steps[b.dataset.ch],n=+b.dataset.step;snap();a.includes(n)?a.splice(a.indexOf(n),1):a.push(n);save(p);b.classList.toggle("on")})}
+function wirePiano(){let p=P();document.querySelectorAll(".key").forEach(k=>k.onclick=()=>preview(k.dataset.key));let g=document.querySelector("#noteGrid");g.ondblclick=e=>{if(e.target!==g)return;let r=g.getBoundingClientRect(),x=(e.clientX-r.left)/r.width,y=e.clientY-r.top,start=Math.floor(x*32),row=Math.max(0,Math.min(notes.length-1,Math.floor(y/24)));snap();p.piano.push({id:uid(),note:notes[row],start,length:4});save(p);renderEditor()};document.querySelectorAll(".note-block").forEach(el=>dragResizable(el,p.piano,32,true))}
+function wirePlaylist(){document.querySelectorAll(".track-lane").forEach(l=>l.ondblclick=e=>{if(e.target!==l)return;let r=l.getBoundingClientRect(),start=Math.floor((e.clientX-r.left)/r.width*64/4)*4;snap();P().clips.push({id:uid(),track:+l.dataset.track,start,length:16,type:"pattern",label:"Pattern 1"});save(P());drawClips();wirePlaylist()});document.querySelectorAll(".clip").forEach(el=>dragClip(el))}
+function dragClip(el){let p=P(),c=p.clips.find(x=>x.id===el.dataset.id),resize=el.querySelector(".clip-resize");let startX,origStart,origLen,mode;el.onpointerdown=e=>{mode=e.target===resize?"resize":"move";startX=e.clientX;origStart=c.start;origLen=c.length;snap();el.setPointerCapture(e.pointerId);el.onpointermove=ev=>{let lane=el.parentElement,r=lane.getBoundingClientRect(),delta=Math.round((ev.clientX-startX)/r.width*64);if(mode==="move"){c.start=Math.max(0,Math.min(63,origStart+delta));el.style.left=c.start/64*100+"%"}else{c.length=Math.max(1,Math.min(64-c.start,origLen+delta));el.style.width=c.length/64*100+"%"}};el.onpointerup=()=>{el.onpointermove=null;save(p)}}}
+function dragResizable(el,arr,total,isNote){let obj=arr.find(x=>x.id===el.dataset.id),handle=el.querySelector(isNote?".note-resize":".clip-resize"),sx,os,ol,mode;el.onpointerdown=e=>{mode=e.target===handle?"resize":"move";sx=e.clientX;os=obj.start;ol=obj.length;snap();el.setPointerCapture(e.pointerId);el.onpointermove=ev=>{let r=el.parentElement.getBoundingClientRect(),d=Math.round((ev.clientX-sx)/r.width*total);if(mode==="move"){obj.start=Math.max(0,Math.min(total-1,os+d));el.style.left=obj.start/total*100+"%"}else{obj.length=Math.max(1,Math.min(total-obj.start,ol+d));el.style.width=obj.length/total*100+"%"}};el.onpointerup=()=>{el.onpointermove=null;save(P())}}}
+function wireMixer(){document.querySelectorAll(".fader").forEach(f=>f.oninput=()=>{P().volumes[f.dataset.mix]=+f.value;save(P())})}
+function ensureAudio(){if(!S.audio)S.audio=new(window.AudioContext||window.webkitAudioContext)();if(S.audio.state==="suspended")S.audio.resume();return S.audio}
+function freq(n){let m=n.match(/^([A-G])(#?)(\d)$/),base={C:0,D:2,E:4,F:5,G:7,A:9,B:11},midi=(+m[3]+1)*12+base[m[1]]+(m[2]?1:0);return 440*Math.pow(2,(midi-69)/12)}
+function preview(n){let a=ensureAudio(),o=a.createOscillator(),g=a.createGain();o.type="triangle";o.frequency.value=freq(n);g.gain.setValueAtTime(.16,a.currentTime);g.gain.exponentialRampToValueAtTime(.001,a.currentTime+.5);o.connect(g).connect(a.destination);o.start();o.stop(a.currentTime+.5)}
+function drum(name){let a=ensureAudio(),t=a.currentTime;if(name==="Kick"){let o=a.createOscillator(),g=a.createGain();o.frequency.setValueAtTime(140,t);o.frequency.exponentialRampToValueAtTime(45,t+.15);g.gain.setValueAtTime(.5,t);g.gain.exponentialRampToValueAtTime(.001,t+.18);o.connect(g).connect(a.destination);o.start();o.stop(t+.2)}else{let len=Math.floor(a.sampleRate*(name==="Open Hat"?.18:.07)),b=a.createBuffer(1,len,a.sampleRate),d=b.getChannelData(0);for(let i=0;i<len;i++)d[i]=Math.random()*2-1;let s=a.createBufferSource(),g=a.createGain();s.buffer=b;g.gain.setValueAtTime(name==="Snare"?.22:.09,t);g.gain.exponentialRampToValueAtTime(.001,t+len/a.sampleRate);s.connect(g).connect(a.destination);s.start()}}
+function synth(n){preview(n)}
+function tick(){let p=P(),s=S.step%16;channels.forEach(c=>{if(p.steps[c].includes(s)){if(["Kick","Snare","Closed Hat","Open Hat"].includes(c))drum(c);else if(c==="Bass")preview("C4");else preview("G4")}});p.piano.forEach(n=>{if(n.start%16===s)synth(n.note)});S.step=(S.step+1)%64;updatePlayhead();document.querySelectorAll(".step").forEach(x=>x.classList.toggle("current",+x.dataset.step===S.step%16))}
+function play(){ensureAudio();S.playing=true;document.querySelector("#play").textContent="❚❚";tick();S.timer=setInterval(tick,60000/P().bpm/4)}
+function stop(){S.playing=false;if(S.timer){clearInterval(S.timer);S.timer=null}let b=document.querySelector("#play");if(b)b.textContent="▶"}
+function updatePlayhead(){let line=document.querySelector("#playhead"),time=document.querySelector("#time");if(line)line.style.left=`calc(110px + (100% - 110px) * ${S.step/64})`;if(time){let bar=Math.floor(S.step/16)+1,beat=Math.floor((S.step%16)/4)+1,sub=S.step%4+1;time.textContent=`${bar}:${String(beat).padStart(2,"0")}:${String(sub).padStart(2,"0")}`}}
+function generate(g){let p=P();snap();channels.forEach(c=>p.steps[c]=[]);p.piano=[];const set=(c,a)=>p.steps[c]=a;if(g==="Phonk"){set("Kick",[0,3,7,10,12]);set("Snare",[4,12]);set("Closed Hat",[0,2,4,6,8,10,12,14]);p.piano=[["C5",0],["G4",4],["A#4",8],["G4",12]].map(x=>({id:uid(),note:x[0],start:x[1],length:4}))}else if(g==="Country"){set("Kick",[0,8]);set("Snare",[4,12]);set("Closed Hat",[0,4,8,12]);p.piano=[["C5",0],["E5",4],["G5",8],["E5",12]].map(x=>({id:uid(),note:x[0],start:x[1],length:4}))}else if(g==="EDM"){set("Kick",[0,4,8,12]);set("Snare",[4,12]);set("Closed Hat",[2,6,10,14]);p.piano=[["C5",0],["D#5",4],["G5",8],["A#5",12]].map(x=>({id:uid(),note:x[0],start:x[1],length:4}))}else if(g==="Trap"){set("Kick",[0,7,10,15]);set("Snare",[4,12]);set("Closed Hat",[0,2,4,6,8,10,11,12,14,15])}else{set("Kick",[0,8]);set("Snare",[4,12]);set("Closed Hat",[0,2,4,6,8,10,12,14]);p.piano=[["C5",0],["G4",4],["A4",8],["F4",12]].map(x=>({id:uid(),note:x[0],start:x[1],length:4}))}save(p);renderEditor()}
+document.addEventListener("keydown",e=>{if(!S.currentId)return;if(e.code==="Space"&&["INPUT","SELECT"].includes(document.activeElement.tagName)===false){e.preventDefault();S.playing?stop():play()}if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==="z"){e.preventDefault();e.shiftKey?redo():undo()}});
 renderHome();
